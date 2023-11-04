@@ -30,19 +30,12 @@ simdThreshold(::Type{Bool}) = 640
     Tuple{UInt64, Int64},
     x, y)
 
-@inline _bits2float(x::UInt64, ::Type{Float64}) = reinterpret(UInt64, Float64(x >>> 11) * 0x1.0p-53)
+@inline _bits2float(x::UInt64, ::Type{Float64}) = bits2float(x, Float64)
+
 @inline function _bits2float(x::UInt64, ::Type{Float32})
-    #=
-    # this implementation uses more high bits, but is harder to vectorize
-    x = x >>> 16  # discard low 16 bits
-    u = Float32(x >>> 24) * Float32(0x1.0p-24)
-    l = Float32(x & 0x00ffffff) * Float32(0x1.0p-24)
-    =#
     ui = (x>>>32) % UInt32
     li = x % UInt32
-    u = Float32(ui >>> 8) * Float32(0x1.0p-24)
-    l = Float32(li >>> 8) * Float32(0x1.0p-24)
-    (UInt64(reinterpret(UInt32, u)) << 32) | UInt64(reinterpret(UInt32, l))
+    return (UInt64(bits2float(ui, Float32)) << 32) | UInt64(bits2float(li, Float32))
 end
 
 # required operations. These could be written more concisely with `ntuple`, but the compiler
@@ -97,27 +90,46 @@ for N in [4,8,16]
         @eval @inline _lshr(x::$VT, y::Int64) = llvmcall($code, $VT, Tuple{$VT, Int64}, x, y)
 
         code = """
-        %shiftamt = shufflevector <1 x i64> <i64 11>, <1 x i64> undef, <$N x i32> zeroinitializer
-        %sh = lshr <$N x i64> %0, %shiftamt
-        %f = uitofp <$N x i64> %sh to <$N x double>
-        %scale = shufflevector <1 x double> <double 0x3ca0000000000000>, <1 x double> undef, <$N x i32> zeroinitializer
-        %m = fmul <$N x double> %f, %scale
-        %i = bitcast <$N x double> %m to <$N x i64>
-        ret <$N x i64> %i
+        %i2 = sub <$N x i64> zeroinitializer, %0
+        %i3 = and <$N x i64> %0, %i2
+        %i4 = uitofp <$N x i64> %i3 to <$N x double>
+        %i5 = bitcast <$N x double> %i4 to <$N x i64>
+        %i6 = sub <$N x i64> <$(join(fill("i64 9209861237972664320", N), ", "))>, %i5
+        %i7 = icmp eq <$N x i64> %0, zeroinitializer
+        %i8 = select <$N x i1> %i7, <$N x i64> zeroinitializer, <$N x i64> %i6
+        %i9 = xor <$N x i64> %0, %i3
+        %i10 = lshr <$N x i64> %i9, <$(join(fill("i64 12", N), ", "))>
+        %i11 = or <$N x i64> %i8, %i10
+        ret <$N x i64> %i11
         """
         @eval @inline _bits2float(x::$VT, ::Type{Float64}) = llvmcall($code, $VT, Tuple{$VT}, x)
 
         code = """
-        %as32 = bitcast <$N x i64> %0 to <$(2N) x i32>
-        %shiftamt = shufflevector <1 x i32> <i32 8>, <1 x i32> undef, <$(2N) x i32> zeroinitializer
-        %sh = lshr <$(2N) x i32> %as32, %shiftamt
-        %f = uitofp <$(2N) x i32> %sh to <$(2N) x float>
-        %scale = shufflevector <1 x float> <float 0x3e70000000000000>, <1 x float> undef, <$(2N) x i32> zeroinitializer
-        %m = fmul <$(2N) x float> %f, %scale
-        %i = bitcast <$(2N) x float> %m to <$N x i64>
-        ret <$N x i64> %i
+        %i1 = bitcast <$N x i64> %0 to <$(2N) x i32>
+        %i2 = sub <$(2N) x i32> zeroinitializer, %i1
+        %i3 = and <$(2N) x i32> %i1, %i2
+        %i4 = uitofp <$(2N) x i32> %i3 to <$(2N) x float>
+        %i5 = bitcast <$(2N) x float> %i4 to <$(2N) x i32>
+        %i6 = sub <$(2N) x i32> <$(join(fill("i32 2122317824", 2N), ", "))>, %i5
+        %i7 = icmp eq <$(2N) x i32> %i1, zeroinitializer
+        %i8 = select <$(2N) x i1> %i7, <$(2N) x i32> zeroinitializer, <$(2N) x i32> %i6
+        %i9 = xor <$(2N) x i32> %i1, %i3
+        %i10 = lshr <$(2N) x i32> %i9, <$(join(fill("i32 9", 2N), ", "))>
+        %i11 = or <$(2N) x i32> %i8, %i10
+        %i12 = bitcast <$(2N) x i32> %i11 to <$N x i64>
+        ret <$N x i64> %i12
         """
         @eval @inline _bits2float(x::$VT, ::Type{Float32}) = llvmcall($code, $VT, Tuple{$VT}, x)
+
+        code = """
+        %i1 = bitcast <$N x i64> %0 to <$(2N) x i32>
+        %i2 = icmp ult <$(2N) x i32> %i1, <$(join(fill("i32 989855744", 2N), ", "))>
+        %i3 = bitcast <$(2N) x i1> %i2 to i$(2N)
+        %i4 = icmp ne i$(2N) %i3, 0
+        %i5 = zext i1 %i4 to i8
+        ret i8 %i5
+        """
+        @eval @inline _any_below_support(x::$VT) = llvmcall($code, Bool, Tuple{$VT}, x)
     end
 end
 
@@ -221,6 +233,52 @@ end
     nothing
 end
 
+@noinline function outlined_rare_branch(s0, s1, s2, s3)
+    res = _plus(_rotl23(_plus(s0,s3)),s0)
+    t = _shl17(s1)
+    s2 = _xor(s2, s0)
+    s3 = _xor(s3, s1)
+    s1 = _xor(s1, s2)
+    s0 = _xor(s0, s3)
+    s2 = _xor(s2, t)
+    s3 = _rotl45(s3)
+    new1 = map(x->bits2float(x.value, Float32), res)
+    res = _plus(_rotl23(_plus(s0,s3)),s0)
+    t = _shl17(s1)
+    s2 = _xor(s2, s0)
+    s3 = _xor(s3, s1)
+    s1 = _xor(s1, s2)
+    s0 = _xor(s0, s3)
+    s2 = _xor(s2, t)
+    s3 = _rotl45(s3)
+    new2 = map(x->bits2float(x.value, Float32), res)
+    vals = reinterpret(NTuple{length(res), UInt64}, (new1..., new2...))
+    return s0, s1, s2, s3, vals
+end
+
+@noinline function xoshiro_bulk_simd(rng::Union{TaskLocalRNG, Xoshiro}, dst::Ptr{UInt8}, len::Int, ::Type{Float32}, ::Val{N}, f::F) where {N,F}
+    T = Float32
+    s0, s1, s2, s3 = forkRand(rng, Val(N))
+
+    i = 0
+    while i + 8*N <= len
+        res = _plus(_rotl23(_plus(s0,s3)),s0)
+        t = _shl17(s1)
+        s2 = _xor(s2, s0)
+        s3 = _xor(s3, s1)
+        s1 = _xor(s1, s2)
+        s0 = _xor(s0, s3)
+        s2 = _xor(s2, t)
+        s3 = _rotl45(s3)
+        vals = f(res, T)
+        if _any_below_support(vals)
+            s0, s1, s2, s3, vals = outlined_rare_branch(s0, s1, s2, s3)
+        end
+        unsafe_store!(reinterpret(Ptr{NTuple{N,VecElement{UInt64}}}, dst + i), vals)
+        i += 8*N
+    end
+    return i
+end
 
 @noinline function xoshiro_bulk_simd(rng::Union{TaskLocalRNG, Xoshiro}, dst::Ptr{UInt8}, len::Int, ::Type{T}, ::Val{N}, f::F) where {T,N,F}
     s0, s1, s2, s3 = forkRand(rng, Val(N))

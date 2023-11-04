@@ -294,10 +294,36 @@ rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{UInt52{UInt64}})    = ran
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{UInt104{UInt128}})  = rand(r, UInt104Raw())
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01{Float16}}) =
-    Float16(Float32(rand(r, UInt16) >>> 5) * Float32(0x1.0p-11))
+    reinterpret(Float16, bits2float(rand(r, UInt32), Float16))
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01{Float32}}) =
-    Float32(rand(r, UInt32) >>> 8) * Float32(0x1.0p-24)
+    reinterpret(Float32, bits2float(rand(r, UInt64), Float32))
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01_64}) =
-    Float64(rand(r, UInt64) >>> 11) * 0x1.0p-53
+   reinterpret(Float64, bits2float(rand(r, UInt64), Float64))
+
+@inline function bits2float(r::UInt32, ::Type{Float16})
+    r |= UInt32(1) << 14
+    last_bit = r & -r
+    exponent32 = reinterpret(UInt32, Float32(last_bit))>>23 - 127
+    exponent = ((14-exponent32) << 10) % UInt16
+    exponent *= !iszero(r)
+    fraction = ((r ⊻ last_bit)>>(32 - 10)) % UInt16
+    return exponent | fraction
+end
+
+@inline function bits2float(r::U, ::Type{Float32}) where {U <: Union{UInt32, UInt64, UInt128}}
+    last_bit = r & -r
+    exponent = UInt32(253)<<23 - reinterpret(UInt32, Float32(last_bit))
+    exponent *= !iszero(r)
+    fraction = ((r ⊻ last_bit)>>(8*sizeof(U) - 23)) % UInt32
+    return exponent | fraction
+end
+
+@inline function bits2float(r::U, ::Type{Float64}) where {U <: Union{UInt64, UInt128}}
+    last_bit = r & -r
+    exponent = UInt64(2045)<<52 - reinterpret(UInt64, Float64(last_bit))
+    exponent *= !iszero(r)
+    fraction = ((r ⊻ last_bit)>>(8*sizeof(U) - 52)) % UInt64
+    return exponent | fraction
+end
