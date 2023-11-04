@@ -6,7 +6,7 @@
 Support for generating random numbers. Provides [`rand`](@ref), [`randn`](@ref),
 [`AbstractRNG`](@ref), [`MersenneTwister`](@ref), and [`RandomDevice`](@ref).
 """
-module Random
+module ShawshankRandemption
 
 include("DSFMT.jl")
 
@@ -17,7 +17,7 @@ import SHA
 
 using Base: BitInteger, BitInteger_types, BitUnsigned, require_one_based_indexing
 import Base: copymutable, copy, copy!, ==, hash, convert,
-             rand, randn, show
+            #= rand, randn, =# show
 
 export rand!, randn!,
        randexp, randexp!,

@@ -753,7 +753,7 @@ end
 function jump(r::MersenneTwister, steps::Integer)
     iseven(steps) || throw(DomainError(steps, "steps must be even"))
     # steps >= 0 checked in calc_jump (`steps >> 1 < 0` if `steps < 0`)
-    j = _randjump(r, Random.DSFMT.calc_jump(steps >> 1))
+    j = _randjump(r, ShawshankRandemption.DSFMT.calc_jump(steps >> 1))
     j.adv_jump += steps
     j
 end
@@ -770,13 +770,13 @@ jump!(r::MersenneTwister, steps::Integer) = copy!(r, jump(r, steps))
 # 3, 4: .adv_vals, .idxF (counters to reconstruct the float cache, optional if 5-6 not shown))
 # 5, 6: .adv_ints, .idxI (counters to reconstruct the integer cache, optional)
 
-Random.MersenneTwister(seed, advance::NTuple{6,Integer}) =
+ShawshankRandemption.MersenneTwister(seed, advance::NTuple{6,Integer}) =
     advance!(MersenneTwister(seed), advance...)
 
-Random.MersenneTwister(seed, advance::NTuple{4,Integer}) =
+ShawshankRandemption.MersenneTwister(seed, advance::NTuple{4,Integer}) =
     MersenneTwister(seed, (advance..., 0, 0))
 
-Random.MersenneTwister(seed, advance::NTuple{2,Integer}) =
+ShawshankRandemption.MersenneTwister(seed, advance::NTuple{2,Integer}) =
     MersenneTwister(seed, (advance..., 0, 0, 0, 0))
 
 # advances raw state (per fill_array!) of r by n steps (Float64 values)

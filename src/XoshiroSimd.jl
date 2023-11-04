@@ -2,8 +2,8 @@
 
 module XoshiroSimd
 # Getting the xoroshiro RNG to reliably vectorize is somewhat of a hassle without Simd.jl.
-import ..Random: rand!
-using ..Random: TaskLocalRNG, rand, Xoshiro, CloseOpen01, UnsafeView, SamplerType, SamplerTrivial, getstate, setstate!
+import ..ShawshankRandemption: rand!
+using ..ShawshankRandemption: TaskLocalRNG, rand, Xoshiro, CloseOpen01, UnsafeView, SamplerType, SamplerTrivial, getstate, setstate!, bits2float
 using Base: BitInteger_types
 using Base.Libc: memcpy
 using Core.Intrinsics: llvmcall
