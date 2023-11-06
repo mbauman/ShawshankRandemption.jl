@@ -272,7 +272,26 @@ end
         s3 = _rotl45(s3)
         vals = f(res, T)
         if _any_below_support(vals)
-            s0, s1, s2, s3, vals = outlined_rare_branch(s0, s1, s2, s3)
+            # At least one value is missing random bits from
+            # at least its mantissa; we need more bits!
+            res = _plus(_rotl23(_plus(s0,s3)),s0)
+            t = _shl17(s1)
+            s2 = _xor(s2, s0)
+            s3 = _xor(s3, s1)
+            s1 = _xor(s1, s2)
+            s0 = _xor(s0, s3)
+            s2 = _xor(s2, t)
+            s3 = _rotl45(s3)
+            new_mantissas =  _reset_mantissas(vals, res)
+            if _any_are_zero(vals)
+                # we have to add dynamic range below 2^-32 to at least one value
+                new_values = _div2carat32(f(res, T)) # -32<<23
+                vals = _ifelse(iszero, new_values, new_mantissas)
+            else
+                # this is the very common case: the nonzero exponents are all valid;
+                # just refresh all mantissa bits in a SIMD-friendly way
+                vals = new_mantissas
+            end
         end
         unsafe_store!(reinterpret(Ptr{NTuple{N,VecElement{UInt64}}}, dst + i), vals)
         i += 8*N
