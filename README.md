@@ -5,7 +5,7 @@ Simple fork of the Random stdlib that changes the definition of `rand()` for flo
 
 The current floating implementation currently rounds down to the previous multiple of `eps(T)/2` for all three types.
 
-Performance is slightly worse (particularly for Float64), but less than 2x:
+Performance is slightly worse (particularly for Float32), but less than 2x on an Apple M1:
 
 ![violin graphs comparing performance](scalar.svg "Scalar Performance")
 
