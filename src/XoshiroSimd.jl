@@ -130,6 +130,25 @@ for N in [4,8,16]
         ret i8 %i5
         """
         @eval @inline _any_below_support(x::$VT) = llvmcall($code, Bool, Tuple{$VT}, x)
+
+        code = """
+        %i1 = bitcast <$N x i64> %0 to <$(2N) x i32>
+        %i2 = icmp eq <$(2N) x i32> %i1, zeroinitializer
+        %i3 = bitcast <$(2N) x i1> %i2 to i$(2N)
+        %i4 = icmp ne i$(2N) %i3, 0
+        %i5 = zext i1 %i4 to i8
+        ret i8 %i5
+        """
+        @eval @inline _any_are_zero(x::$VT) = llvmcall($code, Bool, Tuple{$VT}, x)
+
+        # reset_significand(oldvals::UInt32, newvals::UInt32) = (oldvals & ~significand_mask(Float32) | (newvals & significand_mask(Float32)))
+        code = """
+        %i2 = and <$N x i64> %0, <$(join(fill("i64 -36028792732385280", N), ", "))>
+        %i5 = and <$N x i64> %1, <$(join(fill("i64 36028792732385279", N), ", "))>
+        %i6 = or <$N x i64> %i5, %i2
+        ret <$N x i64> %i6
+        """
+        @eval @inline _reset_significands(oldvals::$VT, newbits::$VT, ::Type{Float32}) = llvmcall($code, $VT, Tuple{$VT, $VT}, oldvals, newbits)
     end
 end
 
@@ -194,6 +213,26 @@ end
     nothing
 end
 
+@noinline function xoshiro_bulk_nosimd(rng::Union{TaskLocalRNG, Xoshiro}, dst::Ptr{UInt8}, len::Int, ::Type{Float32}, f::F
+    ) where {F}
+    s0, s1, s2, s3 = getstate(rng)
+    i = 0
+    while i+4 <= len
+        res = _plus(_rotl23(_plus(s0,s3)),s0)
+        unsafe_store!(reinterpret(Ptr{UInt32}, dst + i), bits2float(res, Float32))
+        t = _shl17(s1)
+        s2 = _xor(s2, s0)
+        s3 = _xor(s3, s1)
+        s1 = _xor(s1, s2)
+        s0 = _xor(s0, s3)
+        s2 = _xor(s2, t)
+        s3 = _rotl45(s3)
+        i += 4
+    end
+    setstate!(rng, (s0, s1, s2, s3, nothing))
+    nothing
+end
+
 @noinline function xoshiro_bulk_nosimd(rng::Union{TaskLocalRNG, Xoshiro}, dst::Ptr{UInt8}, len::Int, ::Type{Bool}, f)
     s0, s1, s2, s3 = getstate(rng)
     i = 0
@@ -233,29 +272,6 @@ end
     nothing
 end
 
-@noinline function outlined_rare_branch(s0, s1, s2, s3)
-    res = _plus(_rotl23(_plus(s0,s3)),s0)
-    t = _shl17(s1)
-    s2 = _xor(s2, s0)
-    s3 = _xor(s3, s1)
-    s1 = _xor(s1, s2)
-    s0 = _xor(s0, s3)
-    s2 = _xor(s2, t)
-    s3 = _rotl45(s3)
-    new1 = map(x->bits2float(x.value, Float32), res)
-    res = _plus(_rotl23(_plus(s0,s3)),s0)
-    t = _shl17(s1)
-    s2 = _xor(s2, s0)
-    s3 = _xor(s3, s1)
-    s1 = _xor(s1, s2)
-    s0 = _xor(s0, s3)
-    s2 = _xor(s2, t)
-    s3 = _rotl45(s3)
-    new2 = map(x->bits2float(x.value, Float32), res)
-    vals = reinterpret(NTuple{length(res), UInt64}, (new1..., new2...))
-    return s0, s1, s2, s3, vals
-end
-
 @noinline function xoshiro_bulk_simd(rng::Union{TaskLocalRNG, Xoshiro}, dst::Ptr{UInt8}, len::Int, ::Type{Float32}, ::Val{N}, f::F) where {N,F}
     T = Float32
     s0, s1, s2, s3 = forkRand(rng, Val(N))
@@ -282,15 +298,20 @@ end
             s0 = _xor(s0, s3)
             s2 = _xor(s2, t)
             s3 = _rotl45(s3)
-            new_mantissas =  _reset_mantissas(vals, res)
+            new_significands = _reset_significands(vals, res, Float32)
             if _any_are_zero(vals)
-                # we have to add dynamic range below 2^-32 to at least one value
-                new_values = _div2carat32(f(res, T)) # -32<<23
-                vals = _ifelse(iszero, new_values, new_mantissas)
+                # we have to add dynamic range below 2^-32 to at least one value, but this is very unlikely
+                # Since this is so unlikely, we'll use NTuples instead of LLVM'ed VecElements
+                new_values32 = reinterpret(NTuple{length(res)*2, UInt32}, f(res, T))
+                new_scaled_values32 = map(x->ifelse(iszero(x), x, x - 0x10000000), new_values32)
+                vals32 = reinterpret(NTuple{length(res)*2, UInt32}, vals)
+                new_significands32 = reinterpret(NTuple{length(res)*2, UInt32}, new_significands)
+                new_result32 = map((v,x,y)->ifelse(iszero(v), x, y), vals32, new_scaled_values32, new_significands32)
+                vals = reinterpret(typeof(vals), new_result32)
             else
                 # this is the very common case: the nonzero exponents are all valid;
                 # just refresh all mantissa bits in a SIMD-friendly way
-                vals = new_mantissas
+                vals = new_significands
             end
         end
         unsafe_store!(reinterpret(Ptr{NTuple{N,VecElement{UInt64}}}, dst + i), vals)
