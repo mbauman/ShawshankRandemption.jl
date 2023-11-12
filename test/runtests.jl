@@ -1231,3 +1231,25 @@ end
     @test xs isa Vector{Pair{Bool, Char}}
     @test length(xs) == 3
 end
+
+## Exhaustively ensure that the possible outputs
+# for uniform [0, 1) floating point distributions
+# are equivalent to a naive `FloatXX(rand(UIntYY), RoundDown)/2^YY`
+function check_sorted_output(A, nbits)
+    F = eltype(A)
+    for i in 0:2^nbits-1
+        expected = F(big(i)/big(2)^nbits, RoundDown)
+        if A[i+1] != expected
+            @error("$F $i/2^$nbits: expected $(expected), got $(A[i+1])")
+            return false
+        end
+    end
+    return true
+end
+
+@testset "exhaustive [0,1) mapping tests with $U" for U in (UInt8, UInt16, #= UInt32 =#) # UInt32s take 8/16/32GB of memory to test
+    for F in (Float16, Float32, Float64)
+        A = sort!([reinterpret(F, ShawshankRandemption.bits2float(u, F)) for u in zero(U):typemax(U)])
+        @test check_sorted_output(A, sizeof(U)*8)
+    end
+end
