@@ -1253,3 +1253,25 @@ end
         @test check_sorted_output(A, sizeof(U)*8)
     end
 end
+
+function check_canaries_32(::Type{F}) where {F}
+    counts = Dict{F,Int}((0,0x1p-32,0x2p-32,0.5,1.0-0x1p32) .=> 0)
+    for u in zero(UInt32):typemax(UInt32)
+        v = reinterpret(F, ShawshankRandemption.bits2float(u, F))
+        @test isinteger(v*0x1p32)
+        if haskey(counts, v)
+            v[counts] += 1
+        end
+    end
+    @test pop!(v, 1) == 0
+    for (k,v) in spots
+        @test v == eps(k)*0x1p32
+    end
+end
+
+@testset "spot-checks for UInt32" begin
+    # but we can reasonably iterate over all UInt32s
+    for F in (Float16, Float32, Float64)
+        check_canaries(F)
+    end
+end

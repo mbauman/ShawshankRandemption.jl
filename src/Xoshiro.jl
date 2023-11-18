@@ -294,49 +294,10 @@ rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{UInt52{UInt64}})    = ran
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{UInt104{UInt128}})  = rand(r, UInt104Raw())
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01{Float16}}) =
-    reinterpret(Float16, bits2float(rand(r, UInt32), Float16))
+    randf(r, Float16)
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01{Float32}}) =
-    reinterpret(Float32, bits2float(rand(r, UInt64), Float32))
+    randf(r, Float32)
 
 rand(r::Union{TaskLocalRNG, Xoshiro}, ::SamplerTrivial{CloseOpen01_64}) =
-   reinterpret(Float64, bits2float(rand(r, UInt64), Float64))
-
-"""
-    invert_exponent(u, ::Type{F<:AbstractFloat})
-
-Given an unsigned `u` whose value is 2^N, return the bit pattern for a floating point
-value of type F with an exponent 2^-(N+1). In the case u == 0, return 0.
-"""
-@inline function invert_exponent(u::Unsigned, ::Type{F}) where {F <: Base.IEEEFloat}
-    U = Base.uinttype(F)
-    # This is a constant-fold-friendly algebraic simplification the following two-step:
-    # u_exponent = (reinterpret(U, F(u)) - exponent_half(F)) >> significand_bits(F)
-    # exponent = exponent_half(F) - ((u_exponent + 1) << significand_bits(F))
-    offset = Base.exponent_half(F) + Base.exponent_one(F)
-    exponent = (offset - reinterpret(U, F(u))) * !iszero(u)
-    return exponent
-end
-
-@inline function invert_exponent(u::Unsigned, ::Type{Float16})
-    sig_bits_diff = Base.significand_bits(Float32) - Base.significand_bits(Float16)
-    # It's slightly more efficient to use Float32 as the intermediary on most processors
-    offset = Base.exponent_half(Float32) + (UInt32(Base.exponent_one(Float16)) << sig_bits_diff)
-    exponent = (offset - reinterpret(UInt32, Float32(u))) * !iszero(u)
-    return (exponent >> sig_bits_diff) % UInt16
-end
-
-@inline function bits2float(r::Unsigned, ::Type{F}) where {F <: Base.IEEEFloat}
-    U = Base.uinttype(F)
-    if 8*sizeof(r) > Base.exponent_max(F)-1
-        # If there are more bits than representable exponents, only consider the bits in the representable range
-        # This is only the case for Float16, and this branch is statically evaluated
-        r_masked = r & (typemax(typeof(r)) >> (sizeof(r)*8-(Base.exponent_max(F)-1)))
-        last_bit = r_masked & -r_masked
-    else
-        last_bit = r & -r
-    end
-    exponent = invert_exponent(last_bit, F)
-    fraction = (zero(U)+(r ⊻ last_bit))>>(8*sizeof(r) - Base.significand_bits(F)) % U
-    return exponent | fraction
-end
+    randf(r, Float64)

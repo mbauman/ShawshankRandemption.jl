@@ -3,7 +3,8 @@
 module XoshiroSimd
 # Getting the xoroshiro RNG to reliably vectorize is somewhat of a hassle without Simd.jl.
 import ..ShawshankRandemption: rand!
-using ..ShawshankRandemption: TaskLocalRNG, rand, Xoshiro, CloseOpen01, UnsafeView, SamplerType, SamplerTrivial, getstate, setstate!, bits2float
+using ..ShawshankRandemption: TaskLocalRNG, rand, Xoshiro, CloseOpen01, UnsafeView, SamplerType, SamplerTrivial, getstate, setstate!
+using ..ShawshankRandemption: ÷₂ꜛ, +₎, coarse_fixed2float, fine_fixed2float, fixed2float, log2eps, reset_significands
 using Base: BitInteger_types
 using Base.Libc: memcpy
 using Core.Intrinsics: llvmcall
@@ -149,6 +150,25 @@ for N in [4,8,16]
         ret <$N x i64> %i6
         """
         @eval @inline _reset_significands(oldvals::$VT, newbits::$VT, ::Type{Float32}) = llvmcall($code, $VT, Tuple{$VT, $VT}, oldvals, newbits)
+
+        code = """
+        %x1 = bitcast <$N x i64> %0 to <$(2N) x i32>
+        %x2 = lshr <$(2N) x i32> %x1, <$(join(fill("i32 9", 2N), ", "))>
+        %x3 = uitofp <$(2N) x i32> %x2 to <$(2N) x float>
+        %x4 = bitcast <$(2N) x float> %x3 to <$(2N) x i32>
+        %x5 = add <$(2N) x i32> %x4, <$(join(fill("i32 -192937984", 2N), ", "))>
+        %x6 = shl <$(2N) x i32> %x1, <$(join(fill("i32 23", 2N), ", "))>
+        %x7 = lshr <$(2N) x i32> %x5, <$(join(fill("i32 23", 2N), ", "))>
+        %x8 = add nuw nsw <$(2N) x i32> %x7, <$(join(fill("i32 1", 2N), ", "))>
+        %x9 = and <$(2N) x i32> %x8, <$(join(fill("i32 31", 2N), ", "))>
+        %x10 = lshr <$(2N) x i32> %x6, %x9
+        %x11 = or <$(2N) x i32> %x10, %x5
+        %x12 = icmp ugt <$(2N) x i32> %x1, <$(join(fill("i32 511", 2N), ", "))>
+        %x13 = select <$(2N) x i1> %x12, <$(2N) x i32> %x11, <$(2N) x i32> zeroinitializer
+        %x14 = bitcast <$(2N) x i32> %x13 to <$N x i64>
+        ret <$N x i64> %x14
+        """
+        @eval @inline _coarse_fixed2float(::Type{Float32}, x::$VT) = llvmcall($code, $VT, Tuple{$VT}, x)
     end
 end
 
@@ -286,10 +306,20 @@ end
         s0 = _xor(s0, s3)
         s2 = _xor(s2, t)
         s3 = _rotl45(s3)
-        vals = f(res, T)
+        vals = _coarse_fixed2float(T, res)
         if _any_below_support(vals)
-            # At least one value is missing random bits from
-            # at least its mantissa; we need more bits!
+            # We need to add detail
+            if _any_are_zero(vals)
+                # This occurs very rarely, with N*eps(T) chance
+                vals = let
+                    bits = reinterpret(NTuple{length(res)*2, UInt32}, res)
+                    vals32 = reinterpret(NTuple{length(res)*2, UInt32}, vals)
+                    fine32 = fine_fixed2float.(T, bits)
+                    new32 = ifelse.(iszero.(vals32), fine32, vals32)
+                    reinterpret(typeof(vals), new32)
+                end
+            end
+            # Now remix the significand bits
             res = _plus(_rotl23(_plus(s0,s3)),s0)
             t = _shl17(s1)
             s2 = _xor(s2, s0)
@@ -300,17 +330,28 @@ end
             s3 = _rotl45(s3)
             new_significands = _reset_significands(vals, res, Float32)
             if _any_are_zero(vals)
-                # we have to add dynamic range below 2^-32 to at least one value, but this is very unlikely
-                # Since this is so unlikely, we'll use NTuples instead of LLVM'ed VecElements
-                new_values32 = reinterpret(NTuple{length(res)*2, UInt32}, f(res, T))
-                new_scaled_values32 = map(x->ifelse(iszero(x), x, x - 0x10000000), new_values32)
-                vals32 = reinterpret(NTuple{length(res)*2, UInt32}, vals)
-                new_significands32 = reinterpret(NTuple{length(res)*2, UInt32}, new_significands)
-                new_result32 = map((v,x,y)->ifelse(iszero(v), x, y), vals32, new_scaled_values32, new_significands32)
-                vals = reinterpret(typeof(vals), new_result32)
+                vals = let
+                    bits = reinterpret(NTuple{length(res)*2, UInt32}, res)
+                    vals32 = reinterpret(NTuple{length(res)*2, UInt32}, vals)
+                    nbits = 32
+                    vals32 = ifelse.(iszero.(vals32), fixed2float.(T, bits) .÷₂ꜛ nbits, vals32)
+                    nbits += 32
+                    while any(log2eps.(vals32) .<= -nbits)
+                        res = _plus(_rotl23(_plus(s0,s3)),s0)
+                        t = _shl17(s1)
+                        s2 = _xor(s2, s0)
+                        s3 = _xor(s3, s1)
+                        s1 = _xor(s1, s2)
+                        s0 = _xor(s0, s3)
+                        s2 = _xor(s2, t)
+                        s3 = _rotl45(s3)
+                        bits = reinterpret(NTuple{length(res)*2, UInt32}, res)
+                        vals32 = ifelse.(log2eps.(vals32) .<= -nbits, vals32 .+₎ (fixed2float.(T, bits) .÷₂ꜛ nbits), vals32)
+                        nbits += 32
+                    end
+                    reinterpret(typeof(vals), vals32)
+                end
             else
-                # this is the very common case: the nonzero exponents are all valid;
-                # just refresh all mantissa bits in a SIMD-friendly way
                 vals = new_significands
             end
         end
